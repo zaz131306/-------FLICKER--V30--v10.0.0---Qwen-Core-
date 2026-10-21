@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flicker-worker"
+version = "10.0.0"
+description = "FLICKER Том 2 — алгоритмический контур (конвейер B1→B9 вокруг нормативного ядра symbolic-core)"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+# НУЛЕВАЯ зависимость — намеренно (см. §14.1 ТЗ).
+# HTTP через stdlib urllib, хэши через hashlib, JSON через json.
+# Это сохраняет воспроизводимость установки в изолированном контуре
+# и не создаёт supply-chain риска в Томе 2.
+dependencies = []
+
+[project.optional-dependencies]
+# Необязательно: только если нужен запуск тестов через pytest.
+# Сами тесты работают и без него: python3 tests/test_interop.py
+dev = ["pytest>=7"]
+
+[project.scripts]
+flicker-worker = "flicker_worker.cli:main"
+
+[tool.setuptools]
+packages = ["flicker_worker"]

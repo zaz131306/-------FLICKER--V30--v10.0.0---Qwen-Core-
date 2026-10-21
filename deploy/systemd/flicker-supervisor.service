@@ -1,0 +1,59 @@
+# FLICKER V30 · Том 1 · security microkernel
+#
+# Привилегированный контур. Hardening максимальный: единственная привилегия,
+# которая ему действительно нужна, — доступ к HSM-устройству (в production).
+#
+# ВАЖНО: ProtectSystem=strict + ReadWritePaths ограничены — crypto-erase
+# обязан работать и в таких условиях (R6.1.1), иначе метрика A5 недостижима.
+
+[Unit]
+Description=FLICKER Tom 1 security microkernel (keystore, crypto-erase, IPC)
+Documentation=file:///opt/flicker/docs/01_ТЗ_FLICKER_V30_Qwen3.md
+After=network.target
+# Том 2 не должен стартовать раньше Тома 1: работа без криптоконтура запрещена (§4.3).
+Before=flicker-worker.service
+
+[Service]
+Type=simple
+User=flicker
+Group=flicker
+ExecStartPre=/usr/local/bin/flicker-supervisor selftest --json
+ExecStart=/usr/local/bin/flicker-supervisor serve \
+    --socket /run/flicker/supervisor.sock \
+    --session-id %H \
+    --session-key ${FLICKER_SESSION_KEY}
+
+Restart=on-failure
+RestartSec=2s
+
+# --- При отказе crypto-erase эксплуатация должна останавливаться (R15.2) ---
+# exit code 10 = ERASE_UNVERIFIED
+SuccessExitStatus=0
+RestartPreventExitStatus=10
+
+# --- hardening ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+ReadOnlyPaths=/opt/flicker
+ReadWritePaths=/run/flicker /var/log/flicker
+
+# Секреты — только из окружения, никогда из unit-файла (§13.1, configs/*.yaml).
+EnvironmentFile=-/etc/flicker/supervisor.env
+
+[Install]
+WantedBy=multi-user.target

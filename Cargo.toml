@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/symbolic-core",
+    "crates/flicker-plan",
+    "crates/supervisor",
+]
+
+[workspace.package]
+version = "10.0.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+repository = "https://example.local/flicker"
+authors = ["FLICKER Engineering"]
+
+[workspace.dependencies]
+symbolic-core = { path = "crates/symbolic-core" }
+
+# Release profile enforces fail-closed behaviour (spec §4.3):
+# panic = "abort" means no unwinding across the privileged boundary.
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+
+[profile.release-debug]
+inherits = "release"
+debug = true
+
+# Test/dev profile keeps unwind so that #[should_panic] and test harness work.
+[profile.dev]
+panic = "unwind"
+
+# NB: `panic` is not configurable for the `test` profile (cargo ignores it and
+# warns). The test harness always needs unwind; only `dev` is set explicitly.

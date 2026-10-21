@@ -1,0 +1,16 @@
+[package]
+name = "symbolic-core"
+description = "FLICKER deterministic symbolic core: FPS-1 PDDL subset parser, state engine, planner portfolio (best-first + seeded MCTS), plan validator, replay hash-chain. Zero dependencies by design (supply-chain cleanliness, auditability)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Intentionally none. The core is std-only: auditable, reproducible,
+# supply-chain clean. See docs/adr/0002-fps1-subset.md.
+
+[dev-dependencies]
+
+[features]
+default = []

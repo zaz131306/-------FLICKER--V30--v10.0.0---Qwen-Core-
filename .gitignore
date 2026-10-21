@@ -1,0 +1,36 @@
+# Артефакты сборки (исключены из снимка рабочей области)
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Replay-логи: аудит-след, в репозиторий не попадает.
+# Хранится в WORM-хранилище (R8.2.1), не в git.
+*.jsonl
+/trace*.jsonl
+
+# Секреты. НИКОГДА не коммитить (§13.1, configs/*.yaml).
+# model_pin.yaml хранит только ХЭШИ весов, не веса и не ключи.
+/etc-flicker/
+*.pem
+*.key
+session_key*
+.env
+
+# Веса моделей: монтируются read-only извне, хэш сверяется с model_pin.yaml
+/models/
+*.safetensors
+*.gguf
+*.bin
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store

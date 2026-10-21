@@ -1,0 +1,14 @@
+[package]
+name = "flicker-supervisor"
+description = "FLICKER Tom 1: security microkernel. HSM abstraction with a software keystore for development, crypto-erase/zeroize orchestration, TEE attestation stub, audited IPC over a Unix domain socket."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "flicker-supervisor"
+path = "src/main.rs"
+
+[dependencies]
+symbolic-core = { workspace = true }

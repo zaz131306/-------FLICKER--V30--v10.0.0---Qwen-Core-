@@ -1,0 +1,176 @@
+# ============================================================================
+#  FLICKER V30 · Приложение В · Конфигурация serving-слоя Qwen3.5
+#  Профиль P1 · Baseline (1 узел, 8× GPU 80 ГБ)
+#
+#  Нормативная ссылка: §5 спецификации.
+#  Этот файл — НЕ «пример конфига». Каждое значение ниже обосновано
+#  требованием R5.3.x. Изменение любого параметра требует повторного
+#  прогона критериев A1/A3 (см. §12.2, §12.4) и обновления model_pin.yaml.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# LLM-MAIN · анализ запроса, синтез отчёта, объяснение плана
+#
+# РОЛЬ НЕ ПОРОЖДАЕТ PDDL НИКОГДА (§5.1). Её выход — свободный текст,
+# который не интерпретируется как команда. Constrained decoding здесь
+# ОТКЛЮЧЁН намеренно: он не нужен и вредит связности изложения.
+# ----------------------------------------------------------------------------
+main:
+  model: Qwen/Qwen3.5-122B-A10B          # MoE: 122B общих / 10B активных
+  revision: <FIX_ME: git-rev или HF-revision>   # R5.2.3 — пиннинг по ревизии
+  tokenizer_mode: auto
+  trust_remote_code: false               # ОБЯЗАТЕЛЬНО false. Remote code = RCE.
+  dtype: auto
+  quantization: fp8                      # профиль P1; для P0 — awq (см. ниже)
+
+  # --- распределение ---
+  tensor_parallel_size: 8                # R5.3.3: смена TP ломает model_pin
+  pipeline_parallel_size: 1              # PP ЗАПРЕЩЁН (§5.4): меж-узловые
+                                         # NCCL-коммуникации в критическом пути
+  enable_expert_parallel: true           # MoE: эксперты по устройствам
+  max_model_len: 32768                   # native 262K не используется:
+                                         # длинный контекст = недетерминизм KV
+                                         # и неоправданная латентность
+
+  # --- детерминизм: ядро G3 ---
+  temperature: 0.0                       # R5.3
+  top_p: 0.0                             # greedy, nucleus-выборка отключена
+  top_k: 1
+  repetition_penalty: 1.0
+  seed: 42                               # фиксируется, не рандомизируется
+
+  # --- ЗАПРЕТЫ, обеспечивающие G3 ---
+  enable_speculative_decoding: false     # R5.3.1: меняет распределение выборки
+  speculative_model: null
+  num_speculative_tokens: 0
+  enable_prefix_caching: true            # детерминизм не нарушает
+  enforce_eager: false                   # R5.3.2: см. verification ниже
+
+  # --- производительность ---
+  gpu_memory_utilization: 0.85
+  max_num_seqs: 32
+  swap_space: 0                          # swap на GPU-узле запрещён (§6.5)
+  disable_log_stats: false
+
+  # --- изоляция ---
+  # Сервис поднимается БЕЗ сетевого доступа наружу.
+  # Единственный listener — Unix domain socket для Тома 1 (§4.3).
+  host: null
+  port: null
+  uds_path: /run/flicker/main.sock
+
+# ----------------------------------------------------------------------------
+# SLM-FORMAL · ЕДИНСТВЕННАЯ модель, которой разрешено порождать PDDL
+#
+# Здесь работает барьер B1 (§7.1). Constrained decoding ОБЯЗАТЕЛЕН.
+# ----------------------------------------------------------------------------
+formal:
+  model: Qwen/Qwen3.5-27B                # dense, 27B
+  revision: <FIX_ME>
+  trust_remote_code: false
+  quantization: awq                      # 4-bit: ~16 ГБ, влезает в 1 GPU
+  fine_tuned_adapter: flicker-slm-fps1-v1   # §11.1 Э2, LoRA/полный FT
+
+  tensor_parallel_size: 2
+  pipeline_parallel_size: 1
+  max_model_len: 16384
+
+  temperature: 0.0
+  top_p: 0.0
+  top_k: 1
+  seed: 42
+
+  enable_speculative_decoding: false     # R5.3.1
+
+  # === BARRIER B1 · CONSTRAINED DECODING ==================================
+  guided_decoding_backend: xgrammar      # R7.1.1 (дефолт vLLM)
+  guided_decoding_grammar_path: grammar/fps1_pddl.ebnf   # Приложение Б
+  guided_decoding_grammar_format: ebnf
+  #
+  # Требуемое свойство: любой порождённый токен-поток является валидным
+  # EMISSION по грамматике. Это делает синтаксически невалидный PDDL
+  # НЕПРЕДСТАВИМЫМ — отсюда G1 = 100 % конструктивно, а не статистически.
+  #
+  # Критерий приёмки A1 (§12.2): 10^6 запросов, 0 parse-ошибок.
+  # Любая ненулевая цифра — блокирующий дефект грамматики или бэкенда.
+  # ========================================================================
+
+  # repair loop (§7.2): диагностика FlickerError возвращается в модель
+  repair_max_attempts: 3                 # R7.2.1
+  repair_temperature_override: 0.0       # R7.2.3: случайность на ремонте ЗАПРЕЩЕНА
+  repair_log_each_attempt: true          # R7.2.2
+
+  max_tokens: 4096
+  stop: ["%%FPS1-SPLIT%%"]               # разделитель из грамматики (§9 Прил. Б)
+
+  uds_path: /run/flicker/formal.sock
+
+# ----------------------------------------------------------------------------
+# CRITIC-NLI · FPCC (барьер B7)
+#
+# ВЕРОЯТНОСТНЫЙ барьер. В G1–G4 НЕ ВХОДИТ (§7.6, R7.6.2).
+# При его отказе система ПРОДОЛЖАЕТ работать с пометкой
+# critic_unavailable=true (§15.4) — в отличие от GraphRAG, отказ которого
+# останавливает систему, потому что без provenance нет барьера G5.
+# ----------------------------------------------------------------------------
+critic:
+  model: Qwen/Qwen3.5-9B
+  revision: <FIX_ME>
+  trust_remote_code: false
+  quantization: null                     # Q8_0 через AWQ при необходимости
+  tensor_parallel_size: 1
+  max_model_len: 8192
+  temperature: 0.0
+  top_p: 0.0
+  top_k: 1
+  seed: 42
+  # выход — строго одна из трёх меток; constrained decoding по JSON-schema
+  guided_decoding_backend: xgrammar
+  guided_decoding_json_schema: |
+    {
+      "type": "object",
+      "properties": {
+        "verdict": {"enum": ["entailment", "neutral", "contradiction"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "conflicting_spans": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["verdict", "confidence"],
+      "additionalProperties": false
+    }
+  uds_path: /run/flicker/critic.sock
+
+# ============================================================================
+#  ПРОФИЛЬ P0 · PoC (1× GPU 80 ГБ) — стенд разработки, CI, демо
+#  MAIN и FORMAL совмещены в одной модели. Совмещение РОЛЕЙ допустимо
+#  только на P0: в production разделение моделей — принцип (§5.1).
+# ============================================================================
+# profile_p0_override:
+#   main.model:   Qwen/Qwen3.5-27B
+#   main.quantization: awq
+#   main.tensor_parallel_size: 1
+#   formal: null            # используется main
+#   critic.model: Qwen/Qwen3.5-4B
+#
+#  АЛЬТЕРНАТИВА при жёстких ограничениях на железо (R5.5.4):
+#   Qwen3.5-35B-A3B (3B активных) в роли SLM-FORMAL — работает на
+#   ускорителях существенно меньшего класса. РЕКОМЕНДУЕМНАЯ ТОЧКА ВХОДА
+#   при блокировке DEP-HW-01.
+# ============================================================================
+
+
+# ============================================================================
+#  VERIFICATION CHECKLIST — выполняется ПОСЛЕ любого изменения этого файла
+#
+#  [ ] A1 · 10^6 fuzz-запросов → 0 parse-ошибок (§12.2)
+#  [ ] A3 · 1000 прогонов → побайтовое совпадение (§12.4)
+#  [ ] A7 · corpus ≥ 10 000: grammar ⊆ parser (§12, R7.1.3)
+#  [ ] R5.3.2 · сравнение logprobs (не только текста!) при enforce_eager
+#               true vs false. При расхождении → enforce_eager: true
+#  [ ] model_pin.yaml обновлён, хэши весов пересчитаны
+#  [ ] SBOM перегенерирован, license-gate пройден (R5.2.1)
+#  [ ] старые replay-цепочки помечены non_reproducible_environment (R11.4.1)
+#
+#  ЦИТАТА §5.3: «Абсолютная побайтовая воспроизводимость LLM-инференса
+#  на GPU-кластере — достижимая, но хрупкая цель.» Каждое изменение
+#  конфига — потенциальная точка потери G3.
+# ============================================================================

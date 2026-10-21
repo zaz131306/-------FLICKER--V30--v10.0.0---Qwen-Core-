@@ -1,0 +1,7 @@
+# Pinned toolchain — part of the reproducibility contract (spec §5.3, R5.3.4).
+# Changing this file changes the build; it must be accompanied by a full
+# re-run of acceptance criteria A1/A3/A7 and an update to configs/model_pin.yaml.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

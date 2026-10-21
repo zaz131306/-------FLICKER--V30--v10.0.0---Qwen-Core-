@@ -1,0 +1,10 @@
+;; FLICKER V30 — пример домена: логистика (FPS-1: :strips :typing)
+(define (domain logistics)
+  (:requirements :strips :typing)
+  (:types truck place)
+  (:predicates (at ?t - truck ?p - place)
+               (road ?a - place ?b - place))
+  (:action drive
+    (:parameters (?t - truck ?a - place ?b - place))
+    (:precondition (and (at ?t ?a) (road ?a ?b)))
+    (:effect (and (not (at ?t ?a)) (at ?t ?b)))))

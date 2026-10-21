@@ -1,0 +1,195 @@
+# ============================================================================
+#  FLICKER V30 · Приложение В · MODEL_PIN
+#
+#  Нормативный артефакт гарантии G3 (§5.3, R5.2.3, R5.3.4).
+#
+#  ПРИНЦИП: модель пинится ПО ХЭШУ ВЕСОВ, а не по имени тега.
+#  Тег `Qwen3.5-27B` может быть пересмотрен издателем — хэш не может.
+#
+#  Любое изменение этого файла:
+#    → меняет model_pin
+#    → требует полного прогона A1/A3/A7 (§13.2)
+#    → делает старые replay-цепочки non_reproducible_environment (R11.4.1)
+#    → требует обновления SBOM и повторного license-gate (R5.2.1)
+# ============================================================================
+
+schema_version: "1.0"
+fps1_version: "FPS-1/1.0"          # = symbolic_core::FPS1_VERSION
+spec_version: "V30/10.0"
+pinned_at: "<FIX_ME: ISO-8601>"
+pinned_by: "<FIX_ME: ответственный>"
+
+model_pin:
+  # ------------------------------------------------------------------------
+  # LLM-MAIN
+  # ------------------------------------------------------------------------
+  main:
+    role: LLM-MAIN
+    family: qwen3.5
+    name: "Qwen/Qwen3.5-122B-A10B"
+    architecture: moe
+    total_params_b: 122
+    active_params_b: 10
+    native_context_tokens: 262144
+    max_model_len_used: 32768
+    quantization: fp8
+    license: Apache-2.0
+    license_verified_by: "<FIX_ME: юр. служба>"      # R5.2.1
+    license_verified_at: "<FIX_ME>"
+    license_evidence: "LICENSE в репозитории checkpoint'а"
+    weights_sha256: "<FIX_ME: SHA-256 всех safetensors-шардов, см. procedure>"
+    tokenizer_sha256: "<FIX_ME>"
+    hf_revision: "<FIX_ME>"
+    field_of_use_restriction: none       # Apache 2.0 — ограничений нет
+    may_generate_pddl: false             # §5.1: LLM-MAIN не порождает PDDL НИКОГДА
+
+  # ------------------------------------------------------------------------
+  # SLM-FORMAL — единственная модель, порождающая PDDL (барьер B1)
+  # ------------------------------------------------------------------------
+  formal:
+    role: SLM-FORMAL
+    family: qwen3.5
+    name: "Qwen/Qwen3.5-27B"
+    architecture: dense
+    total_params_b: 27
+    native_context_tokens: 262144
+    max_model_len_used: 16384
+    quantization: awq-4bit
+    license: Apache-2.0
+    license_verified_by: "<FIX_ME>"
+    weights_sha256: "<FIX_ME: ХЭШ БАЗОВЫХ ВЕСОВ>"
+    hf_revision: "<FIX_ME>"
+    field_of_use_restriction: none
+    may_generate_pddl: true
+    constrained_decoding:
+      enabled: true                      # ОБЯЗАТЕЛЬНО (§7.1, R7.1.1)
+      backend: xgrammar
+      grammar: grammar/fps1_pddl.ebnf
+      grammar_sha256: "<FIX_ME>"         # R7.1.2: грамматика версионируется
+      grammar_fps1_version: "FPS-1/1.0"
+    fine_tune:
+      adapter: "flicker-slm-fps1-v1"
+      adapter_sha256: "<FIX_ME>"
+      base_weights_sha256: "<FIX_ME>"    # адаптер без хэша базы бессмыслен
+      dataset_id: "<FIX_ME>"
+      dataset_sha256: "<FIX_ME>"         # воспроизводимость fine-tuning
+      eval_repair_rate: null             # цель < 5 % (B2, §10.2)
+      status: NOT_TRAINED                # Э2, §11.1 — честно
+
+  # ------------------------------------------------------------------------
+  # CRITIC-NLI (FPCC) — вероятностный барьер, в G1–G4 НЕ входит
+  # ------------------------------------------------------------------------
+  critic:
+    role: CRITIC-NLI
+    family: qwen3.5
+    name: "Qwen/Qwen3.5-9B"
+    architecture: dense
+    total_params_b: 9
+    quantization: q8_0
+    license: Apache-2.0
+    license_verified_by: "<FIX_ME>"
+    weights_sha256: "<FIX_ME>"
+    hf_revision: "<FIX_ME>"
+    may_generate_pddl: false
+    guarantee_class: probabilistic       # R7.6.2 — явная маркировка
+    failure_mode_on_outage: continue_with_flag   # §15.4: critic_unavailable=true
+
+# ============================================================================
+#  ЯВНО ЗАПРЕЩЁННЫЕ МОДЕЛИ ДЛЯ ДАННОГО КОНТУРА
+#  Список ведётся, чтобы запрет был проверяемым, а не подразумеваемым.
+# ============================================================================
+denied_models:
+  - pattern: "meta-llama/*"
+    reason: >
+      Llama Community License + Acceptable Use Policy прямо запрещают
+      военное применение («Military, warfare, nuclear industries or
+      applications, espionage»). Блокирующий комплаенс-дефект V28 (§1.1 changelog).
+  - pattern: "*-Flash"
+    reason: >
+      Hosted API only. Веса недоступны, данные покидают периметр,
+      model_pin невозможен, G3 и G4 недостижимы.
+  - pattern: "Qwen3.8-Flash-Next"
+    reason: >
+      Qwen Community License, НЕ Apache 2.0. Field-of-use ограничения
+      не проверены юридически (R5.2.1).
+  - pattern: "*"
+    license_not: Apache-2.0
+    reason: "Любая модель без подтверждённой Apache-2.0 требует юридического gate."
+
+# ============================================================================
+#  СЕРВИНГОВЫЙ СТЕК — тоже часть model_pin
+#  R5.3.4: обновление любого пункта = смена pin = полный прогон A1/A3/A7
+# ============================================================================
+runtime_pin:
+  vllm_version: "<FIX_ME>"
+  xgrammar_version: "<FIX_ME>"
+  cuda_version: "<FIX_ME>"
+  driver_version: "<FIX_ME>"
+  cudnn_version: "<FIX_ME>"
+  python_version: "<FIX_ME>"
+  os_image_sha256: "<FIX_ME>"
+  tensor_parallel_size: 8            # R5.3.3: смена TP требует переверификации
+  pipeline_parallel_size: 1          # PP запрещён (§5.4)
+  enforce_eager: false               # R5.3.2: см. verification procedure
+  deterministic_verified: false      # СТАВИТСЯ В true ТОЛЬКО ПОСЛЕ ПРОГОНА A3
+
+# ============================================================================
+#  АППАРАТНЫЙ ПРОФИЛЬ
+# ============================================================================
+hardware_profile:
+  active: P1                        # P0 | P1 | P2
+  P0:
+    desc: "PoC / CI / демо — 1× GPU 80 ГБ"
+    gpus: 1
+    vram_gb_per_gpu: 80
+    main_model_override: "Qwen/Qwen3.5-27B (awq)"
+    note: "MAIN и FORMAL совмещены. Допустимо ТОЛЬКО на P0 (§5.1)."
+  P1:
+    desc: "Production baseline — 1 узел, 8× GPU 80 ГБ"
+    gpus: 8
+    vram_gb_per_gpu: 80
+    est_vram_used_gb: 130
+    status: SPECIFIED_NOT_PROCURED
+  P2:
+    desc: "Target — 2 узла, 16× GPU 80 ГБ, Qwen3.5-397B-A17B"
+    gpus: 16
+    status: OPTIONAL
+  fallback_low_hw:
+    desc: "R5.5.4 — при блокировке DEP-HW-01"
+    model: "Qwen/Qwen3.5-35B-A3B"   # 3B активных
+    note: "РЕКОМЕНДУЕМНАЯ ТОЧКА ВХОДА при ограничениях на железо."
+
+# ============================================================================
+#  БЛОКИРУЮЩАЯ ВНЕШНЯЯ ЗАВИСИМОСТЬ
+# ============================================================================
+blocking_dependencies:
+  - id: DEP-HW-01
+    desc: >
+      Поставка ускорителей класса 80 ГБ HBM для юрисдикции РФ заблокирована
+      экспортным контролем США/ЕС.
+    owner: ЗАКАЗЧИК (не разработчик)          # R5.5.1
+    status: OPEN
+    impact: "Профили P1/P2 недостижимы до разрешения."
+    workaround: >
+      Все работы на P0 либо на арендованных облачных мощностях в разрешённой
+      юрисдикции, при условии что данные с грифом там НЕ обрабатываются (R5.5.2).
+    note: >
+      Настоящий файл не содержит и не должен содержать рекомендаций
+      по обходу экспортного контроля.
+  - id: DEP-CRYPTO-01
+    desc: "Сертифицированные ФСБ отечественные СКЗИ для контура КС3."
+    owner: ЗАКАЗЧИК
+    status: OPEN
+    impact: "До разрешения — поставка БЕЗ заявления о классе КС3 (R6.3.2)."
+
+# ============================================================================
+#  ПРОЦЕДУРА ВЫЧИСЛЕНИЯ ХЭШЕЙ ВЕСОВ
+# ============================================================================
+#  bash:
+#    find ./model -name '*.safetensors' -print0 \
+#      | sort -z | xargs -0 sha256sum | sha256sum
+#
+#  Хэш вычисляется по ОТСОРТИРОВАННОМУ списку шардов, чтобы результат
+#  не зависел от порядка обхода файловой системы. Несортированный
+#  find даёт разный порядок на разных ФС → ложные несовпадения model_pin.
+# ============================================================================

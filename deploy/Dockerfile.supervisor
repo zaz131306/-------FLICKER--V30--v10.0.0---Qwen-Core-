@@ -1,0 +1,65 @@
+# FLICKER V30 · Том 1 + нормативное ядро
+#
+# Multi-stage: сборка в rust-образе, runtime — минимальный debian без
+# инструментария. `panic = "abort"` в release (§4.3) означает, что в
+# рантайме не нужен unwinder.
+#
+# ВАЖНО: образ НЕ содержит весов моделей и НЕ содержит ключей.
+# Веса монтируются read-only извне, хэш сверяется с configs/model_pin.yaml.
+
+# ---------------------------------------------------------------- build ----
+FROM rust:1.99-slim AS build
+
+WORKDIR /src
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc libc6-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Сначала только манифесты — слой с зависимостями кэшируется.
+# Зависимостей у symbolic-core НЕТ (§14.1), поэтому кэш дешёвый.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates/symbolic-core/Cargo.toml crates/symbolic-core/
+COPY crates/flicker-plan/Cargo.toml  crates/flicker-plan/
+COPY crates/supervisor/Cargo.toml    crates/supervisor/
+RUN mkdir -p crates/symbolic-core/src crates/flicker-plan/src crates/supervisor/src \
+ && echo 'fn main(){}' > crates/flicker-plan/src/main.rs \
+ && echo 'fn main(){}' > crates/supervisor/src/main.rs \
+ && touch crates/symbolic-core/src/lib.rs \
+ && cargo build --release --workspace || true
+
+COPY crates crates
+RUN touch crates/*/src/*.rs \
+ && cargo build --release --workspace \
+ && cargo test --release --workspace
+
+# ------------------------------------------------------------- runtime ----
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates tini \
+    && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system flicker \
+ && useradd  --system --gid flicker --home /opt/flicker --shell /usr/sbin/nologin flicker
+
+WORKDIR /opt/flicker
+COPY --from=build /src/target/release/flicker-plan      /usr/local/bin/flicker-plan
+COPY --from=build /src/target/release/flicker-supervisor /usr/local/bin/flicker-supervisor
+COPY grammar  /opt/flicker/grammar
+COPY domains  /opt/flicker/domains
+COPY configs  /opt/flicker/configs
+
+# Каталог для UDS и replay-логов. Replay — append-only (R8.2.1):
+# в production монтируется WORM-хранилище.
+RUN mkdir -p /run/flicker /var/log/flicker \
+ && chown -R flicker:flicker /run/flicker /var/log/flicker /opt/flicker
+
+USER flicker
+
+# Проверка целостности при старте: selftest обязан пройти, иначе контейнер
+# не поднимается. Это дешевле, чем обнаружить расхождение в эксплуатации.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD ["/usr/local/bin/flicker-supervisor", "selftest", "--json"]
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/usr/local/bin/flicker-supervisor", "serve", \
+     "--socket", "/run/flicker/supervisor.sock"]

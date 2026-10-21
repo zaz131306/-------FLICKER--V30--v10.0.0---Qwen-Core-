@@ -1,0 +1,147 @@
+# FLICKER V30 · docker-compose
+#
+# Профиль P0 (PoC / CI): ядро + Том 1 + Том 2, БЕЗ GPU и БЕЗ весов.
+# Всё работает на offline-бэкенде (maturity=mock) — это детерминированная
+# подстановка, а не языковая модель. Пригоден для сквозных тестов конвейера.
+#
+# Профиль P1 (production) требует GPU и заблокирован DEP-HW-01 (§5.5 ТЗ);
+# его сервисы описаны в комментарии и намеренно НЕ активированы.
+
+name: flicker
+
+services:
+  # ---------------------------------------------------------------- Том 1 --
+  supervisor:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.supervisor
+    image: flicker-supervisor:local
+    container_name: flicker-supervisor
+    restart: unless-stopped
+    # Привилегированный контур, но без лишних прав: cap_drop ALL,
+    # добавляем только то, что нужно для UDS.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+      - /run/flicker:size=16m,mode=0750
+    volumes:
+      - replay-log:/var/log/flicker
+    environment:
+      FLICKER_SESSION_ID: ${FLICKER_SESSION_ID:-compose-session}
+      FLICKER_SESSION_KEY: ${FLICKER_SESSION_KEY:?FLICKER_SESSION_KEY must be set}
+    command:
+      - /usr/local/bin/flicker-supervisor
+      - serve
+      - --socket
+      - /run/flicker/supervisor.sock
+      - --session-id
+      - ${FLICKER_SESSION_ID:-compose-session}
+      - --session-key
+      - ${FLICKER_SESSION_KEY:?FLICKER_SESSION_KEY must be set}
+    networks: [flicker-internal]
+
+  # ---------------------------------------------------------------- Том 2 --
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    image: flicker-worker:local
+    container_name: flicker-worker
+    restart: unless-stopped
+    depends_on:
+      - supervisor
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    volumes:
+      # общий сокет с Томом 1 — единственный канал (§4.3)
+      - supervisor-sock:/run/flicker:ro
+      - replay-log:/var/log/flicker
+      #Grammar и конфиги уже в образе; при необходимости переопределяются:
+      - ../grammar:/opt/flicker/grammar:ro
+      - ../configs:/opt/flicker/configs:ro
+    environment:
+      FLICKER_SUPERVISOR_SOCK: /run/flicker/supervisor.sock
+      FLICKER_SESSION_ID: ${FLICKER_SESSION_ID:-compose-session}
+      FLICKER_SESSION_KEY: ${FLICKER_SESSION_KEY:?FLICKER_SESSION_KEY must be set}
+      # Offline по умолчанию. Для vLLM: FLICKER_VLLM_URL=http://vllm:8000
+      FLICKER_VLLM_URL: ${FLICKER_VLLM_URL:-}
+    command: ["python3", "-m", "flicker_worker", "selftest", "--json"]
+    networks: [flicker-internal]
+
+  # ------------------------------------------------------------ диагностика -
+  demo:
+    image: flicker-worker:local
+    container_name: flicker-demo
+    depends_on: [worker]
+    profiles: ["demo"]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m
+    volumes:
+      - ../grammar:/opt/flicker/grammar:ro
+    environment:
+      FLICKER_PLAN_BIN: /usr/local/bin/flicker-plan
+    command:
+      - python3
+      - -m
+      - flicker_worker
+      - demo
+      - --replay
+      - /tmp/demo.jsonl
+    networks: [flicker-internal]
+
+networks:
+  # Внутренняя сеть БЕЗ выхода наружу: IEP-изоляция на уровне compose (§9, R9.1).
+  flicker-internal:
+    driver: bridge
+    internal: true
+
+volumes:
+  replay-log:
+    # В production — WORM-хранилище (R8.2.1): append-only, удаление невозможно.
+  supervisor-sock:
+
+# ============================================================================
+#  ПРОФИЛЬ P1 · production (ЗАБЛОКИРОВАН DEP-HW-01)
+#
+#  Не активирован намеренно: требует ускорителей класса 80 ГБ HBM, которые
+#  не поставляются легально в юрисдикцию РФ (экспортный контроль США/ЕС).
+#  Это внешняя блокирующая зависимость с владельцем «заказчик», а не
+#  инженерная задача. Настоящий файл НЕ содержит рекомендаций по обходу
+#  экспортного контроля (R5.5.1).
+#
+#  До разрешения DEP-HW-01 работы ведутся на профиле P0 либо на арендованных
+#  мощностях в разрешённой юрисдикции — при условии, что данные с грифом
+#  там НЕ обрабатываются (R5.5.2).
+#
+#  vllm-formal:                        # SLM-FORMAL · Qwen3.5-27B AWQ
+#    image: vllm/vllm-openai:latest    # версию ЗАФИКСИРОВАТЬ (R5.3.4)
+#    command:
+#      - --model=Qwen/Qwen3.5-27B
+#      - --quantization=awq
+#      - --max-model-len=16384
+#      - --temperature=0.0             # G3
+#      - --top-p=0.0                   # G3
+#      - --top-k=1                     # G3
+#      - --seed=42                     # G3
+#      - --guided-decoding-backend=xgrammar        # B1
+#      - --no-enable-speculative-decoding          # R5.3.1
+#    volumes:
+#      - ../grammar:/grammar:ro
+#      - models:/models:ro             # хэш сверяется с model_pin.yaml
+#    deploy:
+#      resources:
+#        reservations:
+#          devices:
+#            - driver: nvidia
+#              count: 2
+#              capabilities: [gpu]
+# ============================================================================

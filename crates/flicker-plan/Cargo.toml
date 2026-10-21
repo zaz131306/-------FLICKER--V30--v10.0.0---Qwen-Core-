@@ -1,0 +1,14 @@
+[package]
+name = "flicker-plan"
+description = "FLICKER CLI: FPS-1 domain/problem checking, deterministic planning, plan validation, replay chain verification."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "flicker-plan"
+path = "src/main.rs"
+
+[dependencies]
+symbolic-core = { workspace = true }

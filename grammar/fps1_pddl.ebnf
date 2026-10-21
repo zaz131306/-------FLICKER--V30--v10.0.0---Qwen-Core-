@@ -1,0 +1,337 @@
+(* ==========================================================================
+   FPS-1/1.0 — EBNF-грамматика для grammar-constrained decoding
+   Проект «FLICKER» V30, Приложение Б
+
+   НАЗНАЧЕНИЕ
+     Единственный источник истины для барьера B1 (constrained decoding).
+     Компилируется бэкендом xgrammar / outlines в автомат; на каждом шаге
+     декодирования токены, ведущие вне грамматики, маскируются ДО выборки.
+
+   НОРМАТИВНАЯ СВЯЗЬ
+     Грамматика обязана быть ТОЧНО согласована с:
+       crates/symbolic-core/src/pddl.rs :: SUPPORTED_REQUIREMENTS
+     Состав requirements (8):
+       strips, typing, negative-preconditions, disjunctive-preconditions,
+       universal-preconditions, existential-preconditions,
+       conditional-effects, universal-effects
+
+     Требование R7.1.3 (CI, критерий A7):
+       corpus >= 10 000 документов; любой документ, принятый грамматикой,
+       обязан приниматься pddl::parse_domain / pddl::parse_problem.
+       Расхождение = блокирующий дефект, НЕ «погрешность».
+
+   ЯВНО НЕ ПОДДЕРЖИВАЕТСЯ (отклоняется на B2 с machine-readable диагностикой)
+       :fluents / числовые флюенты        -> FlickerError::semantic
+       :equality                          -> FlickerError::semantic
+       :disjunctive-effects               -> FlickerError::semantic
+       :durative-actions, темпоральность   -> FlickerError::semantic
+       :probabilistic-effects             -> FlickerError::semantic
+
+     ВАЖНО НЕ ПУТАТЬ:
+       :disjunctive-preconditions  — ПОДДЕРЖИВАЕТСЯ (дизъюнкция в условиях)
+       :disjunctive-effects        — НЕ поддерживается (недетерминизм эффекта
+                                     несовместим с гарантиями G2 и G3)
+
+   ЧЕСТНОЕ ОГРАНИЧЕНИЕ
+     Грамматика гарантирует G1 (синтаксис). Она НЕ мешает модели выдать
+     синтаксически безупречный PDDL, описывающий не ту задачу. Это ошибка
+     класса E3 и относится к G5 — см. §3 спецификации.
+
+   Версия: FPS-1/1.0   Дата: 09.10.2026   Статус: normative
+   ========================================================================== *)
+
+
+(* --------------------------------------------------------------------------
+   1. ЛЕКСИКА
+   -------------------------------------------------------------------------- *)
+
+NAME        = LETTER, { LETTER | DIGIT | "-" | "_" } ;
+LETTER      = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j"
+            | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t"
+            | "u" | "v" | "w" | "x" | "y" | "z"
+            | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J"
+            | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T"
+            | "U" | "V" | "W" | "X" | "Y" | "Z" ;
+DIGIT       = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+
+(* Переменная в PDDL всегда начинается с "?". Объекты — нет.
+   Это различие критично для grounding (B4): переменная связывается
+   при порождении GroundAction, объект — уже связан.               *)
+VARIABLE    = "?", NAME ;
+
+WS          = " " | "\t" | "\n" | "\r" ;
+COMMENT     = ";", { ANY-EXCEPT-NEWLINE }, "\n" ;
+IGNORED     = { WS | COMMENT } ;
+
+
+(* --------------------------------------------------------------------------
+   2. ТИПИЗИРОВАННЫЕ СПИСКИ  (:typing)
+   --------------------------------------------------------------------------
+   Формат:  ?x ?y - type   или   ?x - t1 ?y - t2
+   Отсутствие "- type" означает нетипизированный объект (допустимо,
+   но R7.3.3 требует типов для всех аргументов действий в production). *)
+
+TYPED_LIST  = { NAME, { NAME }, [ "-", NAME ] } ;
+TYPED_VARS  = { VARIABLE, { VARIABLE }, [ "-", NAME ] } ;
+
+
+(* --------------------------------------------------------------------------
+   3. ТЕРМЫ И АТОМЫ  (:strips)
+   -------------------------------------------------------------------------- *)
+
+TERM        = NAME | VARIABLE ;
+
+ATOM        = "(", NAME, [ TERM, { TERM } ], ")" ;
+
+(* Атом в отрицании/эффекте. canon_atom(pred, args) из pddl.rs задаёт
+   каноническую строковую форму — именно она используется в State (BTreeSet)
+   и в hash-цепочке replay. Порядок аргументов значим: его изменение
+   порождает ДРУГОЙ атом, что ловится барьером B6 (R7.4.2).        *)
+
+
+(* --------------------------------------------------------------------------
+   4. ФОРМУЛЫ УСЛОВИЙ
+      :negative-preconditions :disjunctive-preconditions
+      :universal-preconditions :existential-preconditions
+   -------------------------------------------------------------------------- *)
+
+(* GD = Goal Description. Рекурсивная структура.
+   Глубина рекурсии ограничена на B2 (FlickerError::limit) —
+   грамматика контекстно-свободна и сама по себе глубины не лимитирует. *)
+
+GD          = ATOM
+            | "(", "not",       GD,            ")"   (* negative-precond   *)
+            | "(", "and",     { GD },          ")"   (* strips             *)
+            | "(", "or",      { GD, GD } ,     ")"   (* disjunctive-precond*)
+            | "(", "imply",     GD, GD,        ")"   (* disjunctive-precond*)
+            | "(", "forall", "(", TYPED_VARS, ")", GD, ")"  (* universal    *)
+            | "(", "exists", "(", TYPED_VARS, ")", GD, ")"  (* existential  *)
+            ;
+
+(* Примечание: "or" и "imply" требуют явно объявленного
+   :disjunctive-preconditions в :requirements. Проверка выполняется
+   на B2 (pddl::parse_formula), а не грамматикой: грамматика не видит
+   содержимое :requirements на момент порождения формулы.         *)
+
+
+(* --------------------------------------------------------------------------
+   5. ЭФФЕКТЫ
+      :strips :conditional-effects :universal-effects
+   --------------------------------------------------------------------------
+   ДИЗЪЮНКТИВНЫЕ ЭФФЕКТЫ ЗАПРЕЩЕНЫ: отсутствие ветки "or" ниже —
+   намеренное, а не упущение. Недетерминированный эффект сделал бы
+   невозможными G2 (валидация) и G3 (детерминизм).                 *)
+
+EFFECT      = "(", "and", { EFFECT_CE }, ")"
+            | EFFECT_CE
+            ;
+
+EFFECT_CE   = ATOM                                   (* add    (:strips)    *)
+            | "(", "not", ATOM, ")"                  (* delete (:strips)    *)
+            | "(", "forall", "(", TYPED_VARS, ")", EFFECT, ")"  (* universal*)
+            | "(", "when", GD, EFFECT, ")"           (* conditional         *)
+            ;
+
+
+(* --------------------------------------------------------------------------
+   6. ДЕЙСТВИЕ
+   -------------------------------------------------------------------------- *)
+
+ACTION      = "(", ":", "action",
+              (* -- в PDDL ключевое слово записывается слитно: ":action" -- *)
+              ")"
+            ;
+
+(* Корректная продуктивная форма (записана явно во избежание неоднозначности,
+   которую вносят пробелы между ":" и именем ключа): *)
+
+ACTION_DEF  = "(", ":action", WS, NAME,
+                "(", ":parameters", WS, "(", TYPED_VARS, ")", ")",
+                "(", ":precondition", WS, GD, ")",
+                "(", ":effect", WS, EFFECT, ")",
+              ")"
+            ;
+
+
+(* --------------------------------------------------------------------------
+   7. DOMAIN
+   -------------------------------------------------------------------------- *)
+
+REQUIREMENT = ":strips" | ":typing"
+            | ":negative-preconditions"
+            | ":disjunctive-preconditions"
+            | ":universal-preconditions"
+            | ":existential-preconditions"
+            | ":conditional-effects"
+            | ":universal-effects"
+            ;
+
+(* ЗАКРЫТЫЙ СПИСОК. Любой иной :requirement грамматикой не порождается,
+   следовательно G1 распространяется только на FPS-1-совместимые домены.
+   Попытка запросить :fluents приведёт к тому, что constrained decoding
+   не сможет построить токен — и SLM либо выдаст валидный FPS-1 домен,
+   либо запрос завершится отказом. Молчаливого «частичного успеха» нет. *)
+
+TYPE_DEF    = "(", ":", "types", WS, TYPED_LIST, ")" ;
+CONST_DEF   = "(", ":", "constants", WS, TYPED_LIST, ")" ;
+PRED_DEF    = "(", ":", "predicates",
+                { "(", NAME, { TYPED_LIST } , ")" },
+              ")" ;
+
+DOMAIN      = "(", "define",
+                "(", "domain", WS, NAME, ")",
+                "(", ":requirements", WS, REQUIREMENT, { WS, REQUIREMENT }, ")",
+                [ WS, TYPE_DEF ],
+                [ WS, CONST_DEF ],
+                WS, PRED_DEF,
+                { WS, ACTION_DEF },
+              ")"
+            ;
+
+
+(* --------------------------------------------------------------------------
+   8. PROBLEM
+   -------------------------------------------------------------------------- *)
+
+OBJECT_DEF  = "(", ":", "objects", WS, TYPED_LIST, ")" ;
+
+INIT_LIT    = ATOM
+            | "(", "not", ATOM, ")"        (* negative-preconditions:
+                                              закрытый мир НЕ предполагается *)
+            ;
+
+INIT_DEF    = "(", ":", "init", { WS, INIT_LIT }, ")" ;
+GOAL_DEF    = "(", ":", "goal", WS, GD, ")" ;
+
+PROBLEM     = "(", "define",
+                "(", "problem", WS, NAME, ")",
+                "(", ":domain", WS, NAME, ")",
+                [ WS, OBJECT_DEF ],
+                WS, INIT_DEF,
+                WS, GOAL_DEF,
+              ")"
+            ;
+
+
+(* --------------------------------------------------------------------------
+   9. ТОЧКА ВХОДА ДЛЯ CONSTRAINED DECODING
+   --------------------------------------------------------------------------
+   SLM-FORMAL порождает ОБА документа в одном emission, разделённые
+   маркером. Разделитель фиксируется грамматикой, чтобы B2 мог
+   детерминированно разрезать поток на два источника для
+   parse_domain / parse_problem.                                   *)
+
+SEP         = "\n%%FPS1-SPLIT%%\n" ;
+
+EMISSION    = IGNORED, DOMAIN, SEP, IGNORED, PROBLEM, IGNORED ;
+
+
+(* ==========================================================================
+   ПРИЛОЖЕНИЕ Б.1 — ТЕСТОВЫЕ ВЕКТОРЫ ГРАММАТИКИ
+   Минимальный набор, который обязан приниматься грамматикой И парсером
+   (проверяется на каждом коммите, критерий A7).
+   ========================================================================== *)
+
+(* Б.1.1  Базовый STRIPS + typing *)
+(*
+(define (domain logistics-simple)
+  (:requirements :strips :typing)
+  (:types city location thing vehicle)
+  (:predicates (in-city ?l - location ?c - city)
+               (at ?o - thing ?l - location)
+               (in ?p - thing ?v - vehicle))
+  (:action load-truck
+    (:parameters (?p - thing ?v - vehicle ?l - location))
+    (:precondition (and (at ?p ?l) (at ?v ?l)))
+    (:effect (and (not (at ?p ?l)) (in ?p ?v))))
+)
+%%FPS1-SPLIT%%
+(define (problem logistics-p1)
+  (:domain logistics-simple)
+  (:objects c1 - city l1 l2 - location p1 - thing v1 - vehicle)
+  (:init (in-city l1 c1) (in-city l2 c1) (at p1 l1) (at v1 l1))
+  (:goal (at p1 l2))
+)
+*)
+
+(* Б.1.2  Отрицательные предусловия *)
+(*
+  (:precondition (and (at ?p ?l) (not (in ?p ?v))))
+*)
+
+(* Б.1.3  Дизъюнктивные предусловия (ПОДДЕРЖИВАЕТСЯ) *)
+(*
+  (:precondition (or (at ?p ?l1) (at ?p ?l2)))
+*)
+
+(* Б.1.4  Кванторы в предусловиях *)
+(*
+  (:precondition (forall (?x - thing) (not (damaged ?x))))
+  (:precondition (exists (?x - vehicle) (available ?x)))
+*)
+
+(* Б.1.5  Условные и универсальные эффекты *)
+(*
+  (:effect (when (fragile ?p) (damaged ?p)))
+  (:effect (forall (?x - cargo) (not (in ?x ?v))))
+*)
+
+(* Б.1.6  Вложенная комбинация — все 8 requirements одновременно *)
+(*
+(define (domain fps1-full)
+  (:requirements :strips :typing :negative-preconditions
+                 :disjunctive-preconditions :universal-preconditions
+                 :existential-preconditions :conditional-effects
+                 :universal-effects)
+  (:types obj container)
+  (:predicates (inside ?o - obj ?c - container) (sealed ?c - container)
+               (fragile ?o - obj) (broken ?o - obj) (free ?c - container))
+  (:action open-all
+    (:parameters (?c - container))
+    (:precondition (and (sealed ?c)
+                        (not (free ?c))
+                        (or (free ?c) (exists (?d - container) (free ?d)))
+                        (forall (?o - obj) (not (broken ?o)))))
+    (:effect (and (not (sealed ?c))
+                  (forall (?o - obj) (when (fragile ?o) (inside ?o ?c))))))
+)
+*)
+
+
+(* ==========================================================================
+   ПРИЛОЖЕНИЕ Б.2 — ОТРИЦАТЕЛЬНЫЕ ВЕКТОРЫ
+   Грамматика ОБЯЗАНА не порождать следующее. Если бэкенд допускает
+   любую из этих конструкций — барьер B1 не работает, критерий A1 провален.
+   ========================================================================== *)
+
+(* Б.2.1  Числовой флюент — вне FPS-1
+  (:requirements :fluents)
+  (:function (cost ?c - city))
+  (:effect (increase (total-cost) 10))
+*)
+
+(* Б.2.2  Дизъюнктивный эффект — вне FPS-1
+  (:effect (or (at ?p ?l1) (at ?p ?l2)))
+*)
+
+(* Б.2.3  Равенство — вне FPS-1
+  (:precondition (= ?x ?y))
+*)
+
+(* Б.2.4  Темпоральность — вне FPS-1
+  (:durative-action move
+    (:duration (= ?duration 5))
+    (:condition (at start (at ?v ?l1))))
+*)
+
+(* Б.2.5  Вероятностный эффект — вне FPS-1, принципиально
+  (:effect (probabilistic 0.8 (at ?p ?l2) 0.2 (at ?p ?l3)))
+*)
+
+(* Б.2.6  Неподдерживаемый requirement
+  (:requirements :strips :adl)
+*)
+
+(* ==========================================================================
+   КОНЕЦ ПРИЛОЖЕНИЯ Б
+   ========================================================================== *)

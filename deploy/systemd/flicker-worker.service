@@ -1,0 +1,57 @@
+# FLICKER V30 · Том 2 · алгоритмический контур
+#
+# Непривилегированный сервис. Прямого доступа к ключам НЕ имеет — только
+# через UDS к Тому 1 (§4.3). Изоляция строже, чем у Тома 1: именно здесь
+# выполняется недоверенный код, порождённый моделью (§9, R9.5).
+
+[Unit]
+Description=FLICKER Tom 2 algorithmic contour (pipeline B1-B9)
+Documentation=file:///opt/flicker/docs/01_ТЗ_FLICKER_V30_Qwen3.md
+After=flicker-supervisor.service
+Requires=flicker-supervisor.service
+BindsTo=flicker-supervisor.service
+
+[Service]
+Type=simple
+User=flicker
+Group=flicker
+WorkingDirectory=/opt/flicker/worker
+
+# Воркер не является долгоживущим демоном в профиле P0: он вызывается на
+# запрос. Для постоянной службы замените на свой HTTP/gRPC фронтенд.
+ExecStart=/usr/bin/python3 -m flicker_worker selftest --json
+
+Restart=no
+
+# --- hardening: IEP-контур (§9) ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+# Сеть в IEP отсутствует полностью (R9.1). Доступ к vLLM — только через
+# локальный сокет/интерфейс, который добавляется явным разрешением ниже.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+ReadOnlyPaths=/opt/flicker /opt/flicker/grammar /opt/flicker/configs
+ReadWritePaths=/run/flicker /var/log/flicker /var/lib/flicker
+
+# Ресурсные лимиты (R9.6): превышение даёт FlickerError::limit, а не OOM-kill
+# соседних процессов.
+MemoryMax=8G
+TasksMax=256
+LimitFSIZE=1G
+CPUQuota=400%
+
+EnvironmentFile=-/etc/flicker/worker.env
+
+[Install]
+WantedBy=multi-user.target
