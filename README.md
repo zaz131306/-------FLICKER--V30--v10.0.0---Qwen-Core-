@@ -1,5 +1,5 @@
 # FLICKER V30 · Qwen Core
- ![CI](https://github.com/zaz131306/-------FLICKER--V30--v10.0.0---Qwen-Core-/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/zaz131306/-------FLICKER--V30--v10.0.0---Qwen-Core-/actions/workflows/ci.yml/badge.svg)
 **Система когнитивной поддержки принятия решений с нейро-символическим ядром.**
 
 LLM может ошибаться сколь угодно часто. Ни одна её ошибка не способна
