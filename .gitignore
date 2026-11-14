@@ -34,3 +34,4 @@ session_key*
 .idea/
 .vscode/
 .DS_Store
+deploy/seccomp/flicker_seccomp
