@@ -33,8 +33,8 @@ help:
 	@echo "  lint           clippy: deny unwrap_used/expect_used в Томах 1 и CLI"
 	@echo "  fmt            cargo fmt --check"
 	@echo "  selftest       selftest всех трёх компонентов"
-	@echo "  demo           6 сценариев: 5 ошибок модели, ни одна не стала планом
-	redteam        критерий B1: 520 сценариев, semantic_escape_rate"
+	@echo "  demo           6 сценариев: 5 ошибок модели, ни одна не стала планом"
+	@echo "  redteam        критерий B1: 520 сценариев, semantic_escape_rate"
 	@echo "  verify         полный прогон выполнимых критериев приёмки"
 	@echo "  chains         верифицировать replay-цепи демо"
 	@echo "  clean          удалить артефакты сборки"
